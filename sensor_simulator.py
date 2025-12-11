@@ -1,90 +1,58 @@
-import redis
+import os
 import json
-import random
 import time
-from datetime import datetime, timezone
-import threading
+import random
+from datetime import datetime
+from dotenv import load_dotenv
+from azure.iot.device import IoTHubDeviceClient, Message
 
-# --- Configuration ---
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
-RAW_DATA_KEY = 'raw_data_stream' # Redis List where raw messages go
-LOCATIONS = ["DowsLake", "FifthAvenue", "NAC"]
-SEND_INTERVAL_SECONDS = 10
+# Load .env file values
+load_dotenv()
 
-# Initialize Redis client
-try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    r.ping()
-    print("Successfully connected to Redis.")
-except redis.exceptions.ConnectionError:
-    print("FATAL ERROR: Cannot connect to Redis. Ensure it is running on localhost:6379.")
-    exit(1)
+# Debug print - optional
+print("Loaded env vars:")
+print("DOWS =", os.getenv("DOWS_LAKE_CS"))
+print("FIFTH =", os.getenv("FIFTH_AVENUE_CS"))
+print("NAC =", os.getenv("NAC_CS"))
+print("-------------------------------------")
 
+def get_env(name):
+    value = os.getenv(name)
+    if not value:
+        raise ValueError(f" Missing environment variable: {name}")
+    return value
 
-def generate_telemetry(location_name: str) -> dict:
-    """Generates a realistic set of sensor readings for a given location."""
-    
-    # Simulate realistic ranges, slightly varying them for demonstration
-    ice_thickness = round(random.uniform(20.0, 35.0), 2)
-    surface_temp = round(random.normalvariate(-6.0, 2.5), 2)
-    external_temp = round(surface_temp + random.uniform(0.5, 3.0), 2)
-    snow_accumulation = round(random.uniform(0.0, 5.0), 2)
+# Create IoT Hub clients
+clients = {
+    "dows-lake": IoTHubDeviceClient.create_from_connection_string(get_env("DOWS_LAKE_CS")),
+    "fifth-ave": IoTHubDeviceClient.create_from_connection_string(get_env("FIFTH_AVENUE_CS")),
+    "nac": IoTHubDeviceClient.create_from_connection_string(get_env("NAC_CS"))
+}
 
-    timestamp = datetime.now(timezone.utc).isoformat()
-    
-    data = {
-        "deviceId": f"Device_{location_name}",
-        "location": location_name,
-        "timestamp": timestamp,
-        "IceThickness": ice_thickness,
-        "SurfaceTemperature": surface_temp,
-        "SnowAccumulation": snow_accumulation,
-        "ExternalTemperature": external_temp
+def generate_sensor_data(location):
+    return {
+        "location": location,
+        "timestamp": datetime.utcnow().isoformat(),
+        "ice_thickness": round(random.uniform(20, 40), 2),
+        "surface_temp": round(random.uniform(-15, 2), 2),
+        "snow_accumulation": round(random.uniform(0, 10), 2),
+        "external_temp": round(random.uniform(-20, 5), 2)
     }
-    return data
 
-def sensor_thread(location_name: str):
-    """Function run by each sensor thread to send data."""
-    print(f"[{location_name}] Sensor thread started.")
-    
-    while True:
+print(" Starting Rideau Canal Sensor Simulation...")
+print("Sending new data every 10 seconds...\n")
+
+while True:
+    for location, client in clients.items():
+        data = generate_sensor_data(location)
+        message = Message(json.dumps(data))
+        message.content_type = "application/json"
+
         try:
-            # 1. Generate sensor data
-            telemetry_data = generate_telemetry(location_name)
-            
-            # 2. Serialize data to JSON
-            message_body = json.dumps(telemetry_data)
-            
-            # 3. Push to Redis List
-            r.rpush(RAW_DATA_KEY, message_body)
-            print(f"[{location_name}] Pushed to Redis: {message_body}")
-
-            # Wait for the next interval
-            time.sleep(SEND_INTERVAL_SECONDS)
-
+            client.send_message(message)
+            print(f"✔ Sent from {location}: {data}")
         except Exception as e:
-            print(f"[{location_name}] An error occurred: {e}")
-            time.sleep(5) # Wait before retrying
+            print(f"ERROR sending from {location}: {e}")
 
-def main():
-    """Starts the simulation for all three locations concurrently using threads."""
-    print("Starting Rideau Canal Sensor Simulation...")
-    
-    # Create and start a thread for each location
-    threads = []
-    for loc in LOCATIONS:
-        thread = threading.Thread(target=sensor_thread, args=(loc,))
-        thread.daemon = True # Allows the main program to exit even if threads are running
-        threads.append(thread)
-        thread.start()
-
-    # Keep the main thread alive so the sensor threads can continue sending data
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nSimulation process interrupted. Shutting down all sensors.")
-        
-if __name__ == "__main__":
-    main()
+    print("\n--- Waiting 10 seconds ---\n")
+    time.sleep(10)
